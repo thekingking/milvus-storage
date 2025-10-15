@@ -31,7 +31,7 @@ class Metadata {
   virtual ~Metadata() = default;
 
   virtual std::string Serialize() const = 0;
-  virtual void Deserialize(const std::string& data) = 0;
+  virtual void Deserialize(const std::string_view data) = 0;
 };
 
 class MetadataBuilder {
@@ -74,41 +74,50 @@ class MetadataBuilder {
   }
 
   template <typename MetadataT>
-  static std::vector<std::unique_ptr<MetadataT>> Deserialize(const std::string& data) {
+  static std::vector<std::unique_ptr<MetadataT>> Deserialize(const std::string_view data) {
     if (data.empty()) {
       return {};
     }
 
     std::vector<std::unique_ptr<MetadataT>> result;
-    std::stringstream ss(data, std::ios::binary | std::ios::in);
-    MetadataHeader header;
 
-    if (data.size() < sizeof(header)) {
+    size_t offset = 0;
+
+    if (data.size() < sizeof(MetadataHeader)) {
       return {};
     }
-    ss.read(reinterpret_cast<char*>(&header), sizeof(header));
-    if (!ss || header.magic != kMagicNumber || header.version != kCurrentVersion || header.count == 0) {
+
+    MetadataHeader header;
+    std::memcpy(&header, data.data() + offset, sizeof(header));
+    offset += sizeof(MetadataHeader);
+
+    if (header.magic != kMagicNumber || header.version != kCurrentVersion || header.count == 0) {
       return {};
     }
+
     result.reserve(header.count);
 
-    for (int i = 0; i < header.count; ++i) {
-      uint32_t len = 0;
-      ss.read(reinterpret_cast<char*>(&len), sizeof(len));
-      if (!ss) {
+    for (uint32_t i = 0; i < header.count; ++i) {
+      if (offset + sizeof(uint32_t) > data.size()) {
         return {};
       }
 
-      std::string meta_data(len, '\0');
-      ss.read(&meta_data[0], len);
-      if (!ss) {
+      uint32_t len;
+      std::memcpy(&len, data.data() + offset, sizeof(len));
+      offset += sizeof(uint32_t);
+
+      if (offset + len > data.size()) {
         return {};
       }
+
+      std::string_view meta_data(data.data() + offset, len);
+      offset += len;
 
       auto meta = std::make_unique<MetadataT>();
       meta->Deserialize(meta_data);
       result.emplace_back(std::move(meta));
     }
+
     return result;
   }
 
@@ -248,7 +257,8 @@ class PackedFileMetadata {
     if (!metadata.ok()) {
       return {};
     }
-    return MetadataBuilder::Deserialize<MetadataT>(metadata.ValueOrDie());
+    const std::string& metadata_str = metadata.ValueOrDie();
+    return MetadataBuilder::Deserialize<MetadataT>(std::string_view(metadata_str));
   }
 
   const std::string& GetStorageVersion() const;
